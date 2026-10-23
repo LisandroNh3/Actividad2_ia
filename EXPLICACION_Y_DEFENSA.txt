@@ -1,0 +1,205 @@
+EXPLICACIÓN DEL CÓDIGO Y PREPARACIÓN PARA LA DEFENSA
+Evaluación II de Programación Web — AstroLogistics y Reactor
+
+1. IDEA GENERAL
+
+El proyecto tiene un frontend y un backend. El frontend es la interfaz que utiliza el capitán: muestra formularios, productos, saldo y mensajes. Está hecho con React y componentes de Reactstrap. El backend está hecho con Express y conserva las reglas y los datos: temperatura secreta, inventario y misiones.
+
+El navegador envía solicitudes HTTP y recibe objetos JSON. No modifica directamente el inventario. Por ejemplo, al agregar oxígeno envía un POST con el ID y la cantidad; el servidor comprueba los datos, actualiza el stock y devuelve el nuevo estado de la misión. React guarda esa respuesta en un estado y vuelve a dibujar la interfaz.
+
+2. EXPLICACIÓN POR ARCHIVO
+
+package.json
+Declara dependencias y comandos. React construye la interfaz; React DOM la monta en el elemento root; Reactstrap ofrece Card, Alert, Row, Col, ListGroup y ButtonGroup; Bootstrap aporta sus estilos. Express implementa el servidor. Vite transforma JSX y sirve el frontend en desarrollo. Concurrently ejecuta API y frontend con un solo comando. package-lock.json fija las versiones realmente instaladas para reproducir el proyecto.
+
+vite.config.js
+Activa el complemento de React. El proxy redirige /api, /adjust y /reboot al puerto 3001. El navegador solicita rutas relativas al mismo origen de Vite y Vite las reenvía a Express. Por eso aquí no necesitamos configurar CORS. En producción, Express sirve dist y la API desde el mismo origen.
+
+server/index.js
+Importa createApp, crea la aplicación y escucha el puerto 3001 o el valor de PORT. Separar el arranque de la aplicación permite ejecutar pruebas con puertos temporales y estados nuevos.
+
+server/app.js
+catalogoInicial es un arreglo de objetos: cada objeto tiene id, nombre, precio, stock y categoría. structuredClone evita que instancias diferentes de la aplicación compartan el mismo inventario mutable. Un Map relaciona el UUID de cada misión con sus datos.
+
+temperaturaIdeal usa let porque cambia al reiniciar. randomInt(1, 101) genera enteros desde 1 hasta 100: el límite superior no se incluye. POST /adjust exige un entero dentro del rango y devuelve una pista o un acierto. El valor secreto no se envía al navegador. POST /reboot genera otro valor; por azar puede coincidir con el anterior.
+
+total usa reduce para sumar precio por cantidad. detalle prepara la respuesta pública de la carga: presupuesto inicial, saldo restante, items, total, vencimiento, hora del servidor y estado. El saldo es 500 menos el total; no se mantiene una segunda cuenta independiente que pudiera desincronizarse.
+
+El middleware de /api revisa las misiones antes de procesar una solicitud. Si una misión activa venció, liberar devuelve las reservas y cambia su estado a expirada. La liberación ocurre una sola vez porque ya no está activa. La limpieza de registros antiguos evita acumular indefinidamente sesiones finalizadas.
+
+obtenerMision lee X-Mision-Id y busca la misión. Sin una misión válida responde 401; si expiró responde 410. editable impide modificar una misión confirmada con un 409. Estos middlewares se ejecutan antes de las rutas que los declaran.
+
+cambiarCantidad concentra la regla principal. Busca la cantidad anterior, calcula la diferencia y comprueba stock y presupuesto ANTES de mutar. Si había 2 tanques y solicito 4, la diferencia es 2: se reservan solo dos adicionales. Si paso de 4 a 2, la diferencia es -2 y stock -= diferencia devuelve dos unidades. Después de validar, actualiza o agrega el item y responde el detalle recalculado.
+
+POST /api/mision crea una misión de 3 minutos con 500 créditos. Si la pestaña tenía una misión activa, libera sus reservas. GET /api/inventario devuelve suministros con stock libre. GET /api/carga devuelve la misión identificada. POST agregar suma unidades a lo existente. PUT actualizar establece la cantidad final indicada. DELETE elimina todo el item y devuelve todas sus unidades. POST confirmar exige al menos un item, cambia el estado y conserva el stock descontado.
+
+express.json interpreta el cuerpo JSON. Al final se atienden errores de JSON inválido y otros fallos. express.static sirve la carpeta dist creada por Vite. Los datos viven en memoria: no hay base de datos y se pierden al reiniciar el proceso.
+
+src/api.js
+api es una función async que devuelve una promesa. Obtiene el UUID de sessionStorage, prepara cabeceras, serializa datos con JSON.stringify, espera fetch y convierte la respuesta con respuesta.json. fetch no lanza una excepción automáticamente por un 400 o 500; por eso comprobamos respuesta.ok. Si falla, lanzamos Error con el mensaje del servidor y su status para que la interfaz lo capture.
+
+src/main.jsx: App
+App guarda cuál panel está seleccionado y renderiza Reactor y Logistica. Se ocultan con hidden para mantener su estado al cambiar de sección; así el contador de misión continúa aunque se esté usando el reactor. React DOM monta App en index.html.
+
+src/main.jsx: Reactor
+useState guarda temperatura (string del input), historial (array de objetos), mensaje (string), estabilizado (boolean), ocupado (boolean) y error (string). ajustar cancela el envío normal del formulario con preventDefault, convierte el input a número y envía POST /adjust. Luego actualiza el mensaje, el acierto y el historial. La actualización funcional del historial recibe su valor anterior y crea un nuevo arreglo con spread: no modifica el arreglo original.
+
+El historial muestra todos los intentos aceptados por la API, incluido el correcto; con ello también quedan registrados todos los fallidos pedidos. map convierte cada intento en un ListGroupItem. Si se acertó, el input y el botón se desactivan. reiniciar espera la confirmación de /reboot antes de limpiar los estados. Los errores de red se muestran sin borrar el progreso.
+
+src/main.jsx: Logistica
+useState guarda inventario, carga, error, ocupado, segundos restantes y desfase del reloj. El primer useEffect carga el catálogo y recupera la misión de esta pestaña si existe su ID. La bandera vigente evita aplicar ese resultado cuando el componente ya se desmontó.
+
+guardarCarga aplica la respuesta del servidor y calcula el desfase entre su reloj y Date.now. Otro useEffect instala un setInterval que recalcula los segundos a partir del vencimiento. Su cleanup usa clearInterval para evitar temporizadores sobrantes. Un tercer efecto consulta la API cuando llega a cero: el backend decide si la sesión realmente expiró. El reloj de pantalla es informativo; manipularlo no amplía el plazo real del servidor.
+
+operar concentra el envío de cambios, guarda la carga devuelta y vuelve a obtener el inventario. Mientras trabaja, ocupado desactiva los botones y muestra Calculando peso…; finally restaura el estado incluso si hubo una excepción. mostrarError presenta el mensaje; si hubo 401 o 410, elimina el UUID local e impide seguir usando esa misión.
+
+El catálogo usa map, Row, Col, Card y Badge. Si stock es cero, el botón indica Agotado en Base y está desactivado. La bodega usa ListGroup; find obtiene los datos de cada equipo por su ID. Los botones + y - envían PUT con la cantidad final y Desembarcar envía DELETE. El botón - no permite cero; para retirar se utiliza DELETE. Confirmar envía POST /api/carga/confirmar.
+
+src/styles.css
+Complementa Bootstrap con colores, espaciado, tarjetas, pestañas y una visualización del reactor. Las media queries ajustan la composición en pantallas pequeñas. Los labels, aria-label, aria-live, estados disabled y foco visible ayudan a utilizar y comprender los controles.
+
+tests/api.test.js
+Usa el ejecutor de pruebas integrado en Node y solicitudes HTTP reales. Cada caso crea una aplicación independiente. Se inyectan una temperatura y un reloj controlables para comprobar resultados sin adivinar ni esperar tres minutos. Se comprueban reactor, límites, reservas, saldo, devolución, confirmación, expiración y competencia de dos misiones por las mismas unidades.
+
+3. EJEMPLO NUMÉRICO PARA EXPLICAR EN PIZARRA
+
+Inicio: presupuesto 500; tanque cuesta 50; stock 5; carga vacía.
+Agregar 2: diferencia 2; stock 3; total 100; créditos 400.
+Actualizar a 4: diferencia 4 - 2 = 2; stock 1; total 200; créditos 300.
+Actualizar a 1: diferencia 1 - 4 = -3; stock 1 - (-3) = 4; total 50; créditos 450.
+Eliminar: se devuelve 1; stock 5; total 0; créditos 500.
+
+4. PREGUNTAS POSIBLES DEL DOCENTE Y RESPUESTAS
+
+1) ¿Cuál es la diferencia entre frontend y backend?
+El frontend presenta y recoge información en el navegador. El backend recibe peticiones, valida las reglas y mantiene el estado compartido. Aquí React es frontend y Express es backend.
+
+2) ¿Por qué validan en el servidor si el input ya tiene min y max?
+Porque cualquiera puede llamar a la API sin usar el formulario. Los límites HTML mejoran la experiencia; el servidor es quien debe garantizar la validez.
+
+3) ¿Qué tipos de datos y estructuras usaron?
+String en nombre y mensaje; number en precio, cantidad y temperatura; boolean en estabilizado y ocupado; object en cada suministro y misión; arrays en inventario, historial e itemsCargados. Map guarda las misiones por ID.
+
+4) ¿Qué diferencia existe entre let y const?
+let permite reasignar la variable; const no permite reasignar su referencia. Un arreglo declarado con const sí puede modificar sus elementos. temperaturaIdeal usa let; inventario usa const aunque su stock cambia.
+
+5) ¿Qué es un componente?
+Una función que produce una parte de la interfaz con JSX y puede mantener estado. App, Reactor y Logistica son componentes; Card y Button también lo son, proporcionados por Reactstrap.
+
+6) ¿Qué hace useState?
+Conserva un valor entre renderizados y proporciona una función para actualizarlo. Actualizarlo solicita que React vuelva a renderizar. No se debe tratar el setter como si cambiara inmediatamente la variable local del render actual.
+
+7) ¿Para qué sirve useEffect y qué representa su arreglo de dependencias?
+Sincroniza efectos con el ciclo del componente, como cargar datos o instalar un temporizador. [] se ejecuta al montar; con dependencias se repite cuando cambian. La función retornada limpia el efecto previo o al desmontar.
+
+8) ¿Por qué limpian setInterval?
+Para evitar que siga activo después del desmontaje o que se creen varios intervalos al cambiar dependencias. clearInterval detiene el anterior.
+
+9) ¿Qué hacen map, find, filter y reduce?
+map transforma elementos, aquí a tarjetas; find devuelve la primera coincidencia por ID; filter crea otro arreglo excluyendo el item eliminado; reduce acumula el costo total. Ninguno reemplaza por sí mismo la validación del servidor.
+
+10) ¿Por qué la actualización del historial usa una función y spread?
+La función recibe el estado previo correcto y spread crea otro arreglo. Así no dependemos de una copia antigua del historial ni lo modificamos directamente.
+
+11) ¿Qué es una promesa y cómo usan async/await?
+Una promesa representa un resultado que llegará después o un error. fetch devuelve una. await permite esperar su resultado dentro de una función async, mientras otras tareas del entorno pueden continuar.
+
+12) ¿Por qué hay que revisar respuesta.ok?
+Porque fetch solo rechaza automáticamente ante ciertos errores de red, no por códigos HTTP de error como 400. Nosotros convertimos esos códigos en una excepción con el mensaje del backend.
+
+13) ¿Qué hacen try, catch y finally?
+try ejecuta la operación que puede fallar; catch captura y muestra el error; finally se ejecuta tanto al acertar como al fallar. Aquí permite quitar el indicador de ocupado en cualquier caso.
+
+14) ¿Cómo aplicaron REST?
+GET consulta inventario o carga, POST crea misión o agrega elementos, PUT establece una cantidad y DELETE elimina un recurso. Se usan rutas, cuerpos JSON y códigos HTTP apropiados. Las rutas de acción del reactor respetan las que exige el enunciado.
+
+15) ¿Qué diferencia existe entre req.params y req.body?
+req.params contiene variables de la URL, por ejemplo el id de /actualizar-unidades/:id. req.body contiene el JSON enviado, por ejemplo cantidad. Los parámetros URL llegan como strings; se convierte el id a Number.
+
+16) ¿Qué hace un middleware y next?
+El middleware procesa una petición antes de otra función. Puede validar, responder o llamar next para continuar. obtenerMision valida la sesión y editable impide modificar una carga confirmada.
+
+17) ¿Cómo impiden stock negativo?
+Calculan cuántas unidades adicionales se necesitan y rechazan si superan el stock libre, antes de descontar. Todas las modificaciones de esa regla son síncronas y sin await dentro del mismo proceso Node.
+
+18) ¿Cómo evitan gastar más de 500 créditos?
+Recalculan el total en el servidor usando sus propios precios. Comparan el total propuesto con 500 y responden 400 si lo supera. El navegador no puede decidir el saldo ni el precio.
+
+19) ¿Qué ocurre si falla una validación después de agregar unidades?
+En esta implementación las validaciones ocurren antes de agregar o descontar. Así una operación rechazada no altera la carga, el stock ni el saldo.
+
+20) ¿Qué diferencia hay entre agregar 2 y actualizar a 2?
+Agregar suma 2 a la cantidad actual. Actualizar establece la cantidad absoluta en 2. Si ya había 3, agregar 2 da 5 y actualizar a 2 devuelve una unidad a la base.
+
+21) ¿Por qué reservan al agregar y también existe confirmar?
+El enunciado pide que las unidades se descuenten durante la interacción y se devuelvan al eliminar. Tratamos ese descuento como reserva temporal; confirmar hace definitivo el consumo y bloquea modificaciones.
+
+22) ¿Qué pasa cuando expira el tiempo o cierran la pestaña?
+Una misión activa vencida pierde sus reservas y no admite cambios. El servidor comprueba y libera al recibir la siguiente petición de API, incluso de otro cliente. Cerrar la pestaña no confirma: las reservas quedan hasta el vencimiento y la siguiente comprobación. Si se recarga antes de cerrar la pestaña, sessionStorage permite recuperar su misión.
+
+23) ¿Por qué el tiempo también se revisa en Express?
+Porque se puede pausar JavaScript o manipular el reloj de pantalla. Cada solicitud se comprueba con el reloj del servidor antes de aplicar cambios.
+
+24) ¿Por qué sessionStorage y un UUID?
+El UUID identifica la misión y sessionStorage lo conserva al recargar esa pestaña. Esto no identifica de forma autenticada a una persona. Un sistema real requeriría usuarios, autenticación y autorización.
+
+25) ¿Qué ocurre si dos capitanes intentan reservar las últimas unidades?
+Comparten inventario y tienen cargas distintas. En este único proceso, cada validación y actualización termina de forma síncrona antes de la siguiente; una operación puede ser aceptada y la otra rechazarse. Varios procesos o una base de datos exigirían transacciones o actualizaciones atómicas.
+
+26) ¿Qué ocurre si se reinicia el servidor?
+Se pierde el estado en memoria y se restaura el catálogo inicial. Una misión antigua deja de existir y el frontend pide comenzar otra. Es una limitación documentada y permitida por el ejercicio.
+
+27) ¿Dónde se guarda la temperatura secreta? ¿El reinicio afecta a otros clientes?
+Se guarda en una variable de createApp dentro del backend. Es global a esa instancia del servidor y el reinicio afecta a todos sus clientes. Eso sigue el requisito de una variable del servidor; para juegos independientes habría que asociarla a cada sesión.
+
+28) ¿Qué diferencia hay entre stock cero y créditos insuficientes?
+Stock cero significa que no quedan unidades libres de ese producto. Créditos insuficientes significa que el total excede el presupuesto aunque haya unidades. Si ambas restricciones fallan, nuestra función verifica stock primero.
+
+29) ¿Por qué no basta con desactivar un botón?
+El botón es una ayuda visual. Las solicitudes también pueden enviarse manualmente o desde otro cliente, así que Express repite la validación y protege el estado real.
+
+30) ¿Cuándo usan 400, 401, 404, 409 y 410?
+400 para entrada inválida o restricciones de stock/créditos; 401 para misión ausente; 404 para equipo inexistente; 409 para modificar una carga confirmada; 410 para una sesión vencida. 201 indica creación de misión y 200 una operación exitosa.
+
+31) ¿Qué es Vite y qué es JSX?
+Vite sirve y compila el frontend. JSX es una sintaxis para describir elementos de React dentro de JavaScript; el complemento de React la transforma para que el navegador pueda ejecutarla.
+
+32) ¿Qué cambiarían al utilizar PostgreSQL?
+Guardaríamos productos, misiones e items en tablas, usaríamos transacciones para reservar stock y controles de concurrencia. El frontend podría mantener las mismas rutas. El estado sobreviviría al reinicio.
+
+33) ¿Por qué usan keys en map?
+Ayudan a React a reconocer cada elemento al actualizar una lista. Para productos e items usamos el ID estable. En el historial usamos el índice porque solo se agregan intentos al final o se limpia el arreglo entero.
+
+34) ¿Qué probaron y por qué?
+Las reglas que podrían alterar datos: stock, presupuesto, incremento y devolución, expiración, confirmación y dos misiones por las mismas unidades. También las pistas, límites y reinicio del reactor. El reloj y el generador se inyectan para hacer pruebas deterministas.
+
+35) ¿Hay una validación de peso real?
+No. El enunciado describe el peso como motivación pero no define pesos ni capacidad en kilogramos. Implementamos las restricciones que sí especifica: stock limitado, créditos y tiempo. Calculando peso… es el estado visual solicitado.
+
+36) ¿Cómo colaboró el equipo en GitHub?
+Esta respuesta debe basarse en aportes reales. Explicar qué rama y commits hizo cada integrante y cómo se revisó e integró. Tener código listo no demuestra por sí solo colaboración: el equipo debe realizar su trabajo y conservar evidencia auténtica.
+
+5. GUIÓN BREVE PARA PRESENTAR
+
+“Construimos dos ejercicios con React y Express. En el reactor, el backend genera una temperatura secreta y responde pistas; React guarda intentos y bloquea el formulario al acertar. En AstroLogistics, cada misión tiene 500 créditos y tres minutos. El servidor conserva inventario y reservas, valida stock y saldo y devuelve el estado actualizado. Agregar reserva, reducir o eliminar devuelve, y confirmar bloquea la carga. Si el plazo vence, el servidor rechaza operaciones y libera las reservas. Usamos hooks para los estados y el contador, fetch con async/await para la comunicación y componentes de Reactstrap para la interfaz. El almacenamiento es en memoria y está documentado. Podemos mostrar las pruebas de las reglas del negocio.”
+
+6. PRÁCTICA DE DEFENSA CON EL CÓDIGO ABIERTO
+
+A. Seguir un clic en Añadir a la Nave: onClick → operar → api → fetch → ruta Express → cambiarCantidad → detalle → guardarCarga → nuevo render.
+B. Repetir el recorrido de +, explicar diferencia y calcular stock y saldo sin ejecutar.
+C. Mostrar un error de créditos: explicar por qué no cambia ningún dato y dónde catch presenta el mensaje.
+D. Mostrar useEffect del temporizador, explicar dependencias, cleanup y autoridad del reloj del servidor.
+E. Elegir un producto y explicar de dónde sale su nombre, precio y cantidad en la bodega.
+F. Resolver el reactor con búsqueda binaria: comenzar en 50 y reducir el intervalo con cada pista. Entre 1 y 100 basta un máximo de 7 intentos siguiendo bien esa estrategia.
+G. Cada integrante debe poder explicar ambos ejercicios, no únicamente su archivo. Estudiar las respuestas y reformularlas con sus propias palabras.
+
+7. CAMBIOS QUE PODRÍA PEDIR EL DOCENTE EN VIVO
+
+- Cambiar el tiempo a 60 segundos: durationMs por defecto de createApp.
+- Cambiar presupuesto: actualizar las constantes 500 en total validado, detalle y la etiqueta visual; una mejora sería centralizarlo en una constante.
+- Agregar un producto: incorporar un objeto con ID único en catalogoInicial y revisar su presentación.
+- Hacer que el reactor tenga rango 1–200: cambiar generación, validación del backend, atributos del input y textos.
+- Mostrar solo intentos fallidos: usar filter sobre historial antes de map o agregar al historial solo si estabilizado es false.
+- Permitir quitar con el botón - al llegar a 1: enviar DELETE en ese caso, en lugar de PUT con cero.
+
+No memorizar respuestas sin ubicar las funciones. Abrir los archivos, reproducir el ejemplo y ejecutar las pruebas permite justificar las decisiones durante la defensa.
